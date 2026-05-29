@@ -29,6 +29,7 @@ from utils import (
     load_fold, load_test,
     make_tft_sequences, compute_metrics,
     save_loss_curve, save_results,
+    TqdmCallback,
 )
 
 # ── 하이퍼파라미터 ────────────────────────────────────────────────────────────
@@ -190,16 +191,30 @@ def quantile_loss(quantiles):
 
 # ── TFT 전용 Walk-Forward CV ──────────────────────────────────────────────────
 def run_tft_walk_forward():
+    from tqdm import tqdm
+
     fold_results = []
     last_model   = None
 
-    for fold in range(1, N_FOLDS + 1):
-        print(f"\n── Fold {fold}/{N_FOLDS} ──────────────────")
-        tr_df, vl_df = load_fold(fold)
+    fold_bar = tqdm(
+        range(1, N_FOLDS + 1),
+        desc="[TFT] 전체 진행",
+        unit="fold",
+        position=0,
+        colour="green",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} fold [{elapsed}] {postfix}",
+    )
 
+    for fold in fold_bar:
+        fold_bar.set_postfix(현재=f"Fold {fold}")
+        print(f"\n{'─'*55}")
+        print(f"  [TFT]  Fold {fold} / {N_FOLDS}")
+        print(f"{'─'*55}")
+
+        tr_df, vl_df = load_fold(fold)
         past_tr, fut_tr, y_tr = make_tft_sequences(tr_df, SEQ_LEN)
         past_vl, fut_vl, y_vl = make_tft_sequences(vl_df, SEQ_LEN)
-        print(f"  train: past={past_tr.shape} fut={fut_tr.shape}  "
+        print(f"  데이터  train: past={past_tr.shape} fut={fut_tr.shape}  "
               f"val: past={past_vl.shape}")
 
         model = build_tft()
@@ -211,10 +226,15 @@ def run_tft_walk_forward():
         callbacks = [
             keras.callbacks.EarlyStopping(
                 monitor="val_loss", patience=PATIENCE,
-                restore_best_weights=True, verbose=1,
+                restore_best_weights=True, verbose=0,
             ),
             keras.callbacks.ReduceLROnPlateau(
                 monitor="val_loss", factor=0.5, patience=3, verbose=0,
+            ),
+            TqdmCallback(
+                total_epochs=MAX_EPOCHS,
+                fold=fold,
+                model_name="tft",
             ),
         ]
 
@@ -228,27 +248,32 @@ def run_tft_walk_forward():
         )
 
         vl_preds = model.predict([past_vl, fut_vl], verbose=0)  # (N, 3)
-        # P50(중앙값, index=1)으로 MAE/RMSE/MAPE 계산
-        metrics = compute_metrics(y_vl, vl_preds[:, 1])
+        metrics  = compute_metrics(y_vl, vl_preds[:, 1])        # P50 기준
         metrics["fold"] = fold
         fold_results.append(metrics)
-        print(f"  Fold {fold} (P50) → MAE={metrics['MAE']:.4f}  "
-              f"RMSE={metrics['RMSE']:.4f}  MAPE={metrics['MAPE']:.2f}%")
+        print(f"\n  ✅ Fold {fold} 결과 (P50) │ "
+              f"MAE={metrics['MAE']:.4f}  "
+              f"RMSE={metrics['RMSE']:.4f}  "
+              f"MAPE={metrics['MAPE']:.2f}%")
 
         save_loss_curve(history, fold, "tft")
         last_model = model
 
+    fold_bar.close()
+
     # ── 최종 테스트 ──────────────────────────────────────────────────────────
-    print("\n── Final Test ──────────────────────────────")
+    print(f"\n{'═'*55}")
+    print(f"  [TFT]  Final Test")
+    print(f"{'═'*55}")
     test_df = load_test()
     past_te, fut_te, y_te = make_tft_sequences(test_df, SEQ_LEN)
     te_preds = last_model.predict([past_te, fut_te], verbose=0)  # (N, 3)
 
     test_metrics = compute_metrics(y_te, te_preds[:, 1])   # P50 기준
     p90_mae = float(np.mean(np.abs(y_te - te_preds[:, 2])))
-    print(f"  Test (P50) → MAE={test_metrics['MAE']:.4f}  "
+    print(f"  🏁 Test (P50) │ MAE={test_metrics['MAE']:.4f}  "
           f"RMSE={test_metrics['RMSE']:.4f}  MAPE={test_metrics['MAPE']:.2f}%")
-    print(f"  Test (P90) → MAE={p90_mae:.4f}  ← Pod 용량 결정 기준")
+    print(f"     Test (P90) │ MAE={p90_mae:.4f}  ← Pod 용량 결정 기준")
 
     # P10/P50/P90 밴드 시각화
     _save_tft_pred_plot(y_te, te_preds)

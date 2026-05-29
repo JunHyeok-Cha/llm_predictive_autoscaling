@@ -1,8 +1,10 @@
 """
 utils.py — 공통 유틸리티 (Keras/TensorFlow)
+  - GPU 설정 (메모리 증가 모드)
   - 데이터 로드
   - 슬라이딩 윈도우 배열 생성
   - 평가 지표 (MAE, RMSE, MAPE)
+  - tqdm 진행바 Keras 콜백
   - 결과 저장 / 시각화
 """
 import os, json, pickle
@@ -11,6 +13,25 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+# ── GPU 설정 (import 시점에 즉시 실행) ───────────────────────────────────────
+import tensorflow as tf
+
+def setup_gpu():
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"  🟢 GPU 사용: {[g.name for g in gpus]}")
+        # 혼합 정밀도(FP16) — NVIDIA Ampere+ (RTX 30xx/40xx) 에서 1.5~2x 속도
+        from tensorflow.keras import mixed_precision
+        mixed_precision.set_global_policy("mixed_float16")
+        print("  🟢 Mixed Precision (FP16) 활성화")
+    else:
+        print("  🟡 GPU 없음 — CPU로 실행")
+    return bool(gpus)
+
+HAS_GPU = setup_gpu()
 
 # ── 경로 ─────────────────────────────────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -119,6 +140,40 @@ def compute_metrics(y_true, y_pred):
             "MAPE": mape(y_true, y_pred)}
 
 
+# ── tqdm 진행바 Keras 콜백 ───────────────────────────────────────────────────
+from tensorflow import keras as _keras
+
+class TqdmCallback(_keras.callbacks.Callback):
+    """
+    epoch 단위 tqdm 진행바.
+    매 epoch 끝마다 train_loss / val_loss / lr 을 바에 표시.
+    """
+    def __init__(self, total_epochs: int, fold: int, model_name: str):
+        super().__init__()
+        from tqdm import tqdm
+        self.pbar = tqdm(
+            total=total_epochs,
+            desc=f"  [{model_name}] Fold {fold}",
+            unit="epoch",
+            dynamic_ncols=True,
+            colour="cyan",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+        )
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        lr = float(self.model.optimizer.learning_rate)
+        self.pbar.set_postfix(
+            train=f"{logs.get('loss', 0):.4f}",
+            val=f"{logs.get('val_loss', 0):.4f}",
+            lr=f"{lr:.2e}",
+        )
+        self.pbar.update(1)
+
+    def on_train_end(self, logs=None):
+        self.pbar.close()
+
+
 # ── 결과 저장 ─────────────────────────────────────────────────────────────────
 def save_loss_curve(history, fold: int, model_name: str):
     fig, ax = plt.subplots(figsize=(7, 3))
@@ -163,7 +218,7 @@ def save_results(fold_results: list, test_metrics: dict, model_name: str):
 
 # ── Walk-Forward CV 공통 실행기 (BiLSTM / iTransformer 용) ───────────────────
 def run_walk_forward(
-    build_fn,          # 모델을 반환하는 함수 build_fn() → keras.Model
+    build_fn,           # 모델을 반환하는 함수 build_fn() → keras.Model
     seq_len: int,
     model_name: str,
     batch_size: int = 256,
@@ -171,20 +226,34 @@ def run_walk_forward(
     patience:   int = 8,
 ):
     """
-    build_fn(): 호출할 때마다 새 Keras 모델을 반환해야 함.
+    build_fn(): 호출할 때마다 새 Keras 모델을 반환해야 함 (fold마다 초기화).
     """
-    import tensorflow as tf
     from tensorflow import keras
+    from tqdm import tqdm
 
     fold_results = []
     last_model   = None
 
-    for fold in range(1, N_FOLDS + 1):
-        print(f"\n── Fold {fold}/{N_FOLDS} ──────────────────")
+    # ── 전체 진행 표시 (fold 단위) ─────────────────────────────────────────
+    fold_bar = tqdm(
+        range(1, N_FOLDS + 1),
+        desc=f"[{model_name}] 전체 진행",
+        unit="fold",
+        position=0,
+        colour="green",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} fold [{elapsed}] {postfix}",
+    )
+
+    for fold in fold_bar:
+        fold_bar.set_postfix(현재=f"Fold {fold}")
+        print(f"\n{'─'*55}")
+        print(f"  [{model_name.upper()}]  Fold {fold} / {N_FOLDS}")
+        print(f"{'─'*55}")
+
         tr_df, vl_df = load_fold(fold)
         X_tr, y_tr   = make_sequences(tr_df, seq_len)
         X_vl, y_vl   = make_sequences(vl_df, seq_len)
-        print(f"  train: {X_tr.shape}  val: {X_vl.shape}")
+        print(f"  데이터  train={X_tr.shape}  val={X_vl.shape}")
 
         model = build_fn()
         model.compile(
@@ -195,10 +264,15 @@ def run_walk_forward(
         callbacks = [
             keras.callbacks.EarlyStopping(
                 monitor="val_loss", patience=patience,
-                restore_best_weights=True, verbose=1,
+                restore_best_weights=True, verbose=0,
             ),
             keras.callbacks.ReduceLROnPlateau(
                 monitor="val_loss", factor=0.5, patience=3, verbose=0,
+            ),
+            TqdmCallback(
+                total_epochs=max_epochs,
+                fold=fold,
+                model_name=model_name,
             ),
         ]
 
@@ -208,33 +282,55 @@ def run_walk_forward(
             epochs=max_epochs,
             batch_size=batch_size,
             callbacks=callbacks,
-            verbose=0,
+            verbose=0,          # Keras 기본 출력 끄고 tqdm만 사용
         )
 
         vl_preds = model.predict(X_vl, verbose=0).squeeze()
         metrics  = compute_metrics(y_vl, vl_preds)
         metrics["fold"] = fold
         fold_results.append(metrics)
-        print(f"  Fold {fold} → MAE={metrics['MAE']:.4f}  "
-              f"RMSE={metrics['RMSE']:.4f}  MAPE={metrics['MAPE']:.2f}%")
+
+        print(f"\n  ✅ Fold {fold} 결과 │ "
+              f"MAE={metrics['MAE']:.4f}  "
+              f"RMSE={metrics['RMSE']:.4f}  "
+              f"MAPE={metrics['MAPE']:.2f}%")
 
         save_loss_curve(history, fold, model_name)
         last_model = model
 
-    # 최종 테스트
-    print("\n── Final Test ──────────────────────────────")
+    fold_bar.close()
+
+    # ── 최종 테스트 ──────────────────────────────────────────────────────────
+    print(f"\n{'═'*55}")
+    print(f"  [{model_name.upper()}]  Final Test")
+    print(f"{'═'*55}")
     test_df    = load_test()
     X_te, y_te = make_sequences(test_df, seq_len)
-    te_preds   = last_model.predict(X_te, verbose=0).squeeze()
+
+    te_preds = last_model.predict(
+        X_te, verbose=0,
+        callbacks=[keras.callbacks.LambdaCallback(
+            on_predict_begin=lambda _: print("  예측 중...", end="", flush=True),
+            on_predict_end=lambda _:   print(" 완료"),
+        )],
+    ).squeeze()
+
     test_metrics = compute_metrics(y_te, te_preds)
-    print(f"  Test → MAE={test_metrics['MAE']:.4f}  "
-          f"RMSE={test_metrics['RMSE']:.4f}  MAPE={test_metrics['MAPE']:.2f}%")
+    print(f"  🏁 Test 결과 │ "
+          f"MAE={test_metrics['MAE']:.4f}  "
+          f"RMSE={test_metrics['RMSE']:.4f}  "
+          f"MAPE={test_metrics['MAPE']:.2f}%")
+
+    # CV 평균 요약
+    cv_mae  = float(np.mean([r["MAE"]  for r in fold_results]))
+    cv_mape = float(np.mean([r["MAPE"] for r in fold_results]))
+    print(f"\n  📊 CV 평균 │ MAE={cv_mae:.4f}  MAPE={cv_mape:.2f}%")
 
     save_pred_plot(y_te, te_preds, model_name)
     save_results(fold_results, test_metrics, model_name)
 
     model_path = os.path.join(RESULTS_DIR, f"{model_name}_final.keras")
     last_model.save(model_path)
-    print(f"  모델 저장: {model_path}")
+    print(f"  💾 모델 저장: {model_path}")
 
     return fold_results, test_metrics
