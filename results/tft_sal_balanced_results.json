@@ -1,0 +1,75 @@
+{
+  "model": "tft",
+  "phase_tag": "sal_balanced",
+  "fold_val_metrics": [
+    {
+      "MAE": 0.10487847030162811,
+      "RMSE": 0.1253015547990799,
+      "SMAPE": 104.78123426437378,
+      "violation_rate": 0.16831980763450555,
+      "avg_overprovision": 0.09425457566976547,
+      "avg_underprovision": 0.010623900219798088,
+      "sal_eval_score": 0.14794636230467717,
+      "fold": 1
+    },
+    {
+      "MAE": 0.003074949374422431,
+      "RMSE": 0.020411737263202667,
+      "SMAPE": 167.2087550163269,
+      "violation_rate": 0.08936980262498748,
+      "avg_overprovision": 0.0021513639949262142,
+      "avg_underprovision": 0.0009235853794962168,
+      "sal_eval_score": 0.007073148357634175,
+      "fold": 2
+    },
+    {
+      "MAE": 0.044480446726083755,
+      "RMSE": 0.08642870932817459,
+      "SMAPE": 134.86167192459106,
+      "violation_rate": 0.4713956517383028,
+      "avg_overprovision": 0.03481690213084221,
+      "avg_underprovision": 0.009663548320531845,
+      "sal_eval_score": 0.08473738971615953,
+      "fold": 3
+    },
+    {
+      "MAE": 0.04328228905797005,
+      "RMSE": 0.08122433722019196,
+      "SMAPE": 103.33647727966309,
+      "violation_rate": 0.18379921851517883,
+      "avg_overprovision": 0.027229376137256622,
+      "avg_underprovision": 0.016052911058068275,
+      "sal_eval_score": 0.10811884593409107,
+      "fold": 4
+    },
+    {
+      "MAE": 0.019107207655906677,
+      "RMSE": 0.049181438982486725,
+      "SMAPE": 90.30866622924805,
+      "violation_rate": 0.1741308486123635,
+      "avg_overprovision": 0.014529558829963207,
+      "avg_underprovision": 0.00457764882594347,
+      "sal_eval_score": 0.03800984718463427,
+      "fold": 5
+    }
+  ],
+  "cv_mean": {
+    "MAE": 0.04296467262320221,
+    "RMSE": 0.07250955551862717,
+    "SMAPE": 120.09936094284058,
+    "violation_rate": 0.21740306582506763,
+    "avg_overprovision": 0.03459635535255075,
+    "avg_underprovision": 0.008368318760767579,
+    "sal_eval_score": 0.07717711869943925
+  },
+  "test_metrics": {
+    "MAE": 0.022117679938673973,
+    "RMSE": 0.04477640986442566,
+    "SMAPE": 85.11468172073364,
+    "violation_rate": 0.1863058384927768,
+    "violation_rate_peak": 0.4072353136408895,
+    "avg_overprovision": 0.017501840367913246,
+    "avg_underprovision": 0.004615838639438152,
+    "sal_eval_score": 0.041214473043327975
+  }
+}

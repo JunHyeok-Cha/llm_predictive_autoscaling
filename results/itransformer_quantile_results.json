@@ -1,0 +1,82 @@
+{
+  "model": "itransformer",
+  "phase_tag": "quantile",
+  "fold_val_metrics": [
+    {
+      "MAE": 0.0555240660905838,
+      "RMSE": 0.07852340489625931,
+      "SMAPE": 97.57511615753174,
+      "violation_rate": 0.17317393058918482,
+      "avg_overprovision": 0.08373340219259262,
+      "avg_underprovision": 0.011448784731328487,
+      "sal_eval_score": 0.14156612792972553,
+      "band_width": 0.1484835296869278,
+      "fold": 1
+    },
+    {
+      "MAE": 0.0019074477022513747,
+      "RMSE": 0.01874343492090702,
+      "SMAPE": 173.25356006622314,
+      "violation_rate": 0.011097659402744148,
+      "avg_overprovision": 0.004628233145922422,
+      "avg_underprovision": 0.0009623176301829517,
+      "sal_eval_score": 0.009477552322286524,
+      "band_width": 0.005145714618265629,
+      "fold": 2
+    },
+    {
+      "MAE": 0.032056719064712524,
+      "RMSE": 0.08021223545074463,
+      "SMAPE": 127.03859806060791,
+      "violation_rate": 0.10078692493946731,
+      "avg_overprovision": 0.04491157457232475,
+      "avg_underprovision": 0.009577639400959015,
+      "sal_eval_score": 0.09314245075605222,
+      "band_width": 0.07704029232263565,
+      "fold": 3
+    },
+    {
+      "MAE": 0.037835948169231415,
+      "RMSE": 0.08777408301830292,
+      "SMAPE": 96.7515230178833,
+      "violation_rate": 0.09538942695722356,
+      "avg_overprovision": 0.05309944227337837,
+      "avg_underprovision": 0.008551105856895447,
+      "sal_eval_score": 0.09617929451785813,
+      "band_width": 0.09092902392148972,
+      "fold": 4
+    },
+    {
+      "MAE": 0.013401363976299763,
+      "RMSE": 0.04208378866314888,
+      "SMAPE": 94.98291015625,
+      "violation_rate": 0.04302865213882163,
+      "avg_overprovision": 0.02703251503407955,
+      "avg_underprovision": 0.0024666092358529568,
+      "sal_eval_score": 0.039511859228020016,
+      "band_width": 0.050796348601579666,
+      "fold": 5
+    }
+  ],
+  "cv_mean": {
+    "MAE": 0.028145109000615776,
+    "RMSE": 0.06146738938987255,
+    "SMAPE": 117.92034149169922,
+    "violation_rate": 0.08469531880548829,
+    "avg_overprovision": 0.04268103344365955,
+    "avg_underprovision": 0.006601291371043772,
+    "sal_eval_score": 0.07597545695078849,
+    "band_width": 0.07447898183017969
+  },
+  "test_metrics": {
+    "MAE": 0.016352269798517227,
+    "RMSE": 0.03828708082437515,
+    "SMAPE": 94.17113661766052,
+    "violation_rate": 0.056681380417335475,
+    "violation_rate_peak": 0.34171839268213,
+    "avg_overprovision": 0.028708232566714287,
+    "avg_underprovision": 0.003352370345965028,
+    "sal_eval_score": 0.04566280149750021,
+    "band_width": 0.04948769882321358
+  }
+}
