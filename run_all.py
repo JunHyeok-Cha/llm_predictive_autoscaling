@@ -1,8 +1,12 @@
 """
-run_all.py — 전체 모델 순차 학습 + 결과 비교
-==============================================
-BiLSTM → iTransformer → TFT 순서로 학습하고
-최종 비교 테이블 + 비교 그래프를 출력.
+run_all.py — 전체 모델 순차 학습 + 결과 비교 (2-Phase: Quantile + SAL)
+=======================================================================
+각 모델은 파일당 4개 서브실험을 순차 실행한다:
+  Phase 1 — quantile (P10/P50/P90, pinball loss)
+  Phase 2 — sal_conservative / sal_balanced / sal_aggressive (point, SAL loss)
+
+따라서 모델당 결과 파일 4개 × 3개 모델 = 12개 설정을 모두 읽어 비교한다.
+모든 설정은 공통 기준(SAL_SCENARIOS['balanced'])의 sal_eval_score로 동일하게 비교된다.
 
 사용법:
     # 전체 학습 + 비교
@@ -13,6 +17,9 @@ BiLSTM → iTransformer → TFT 순서로 학습하고
 
     # 학습 건너뛰고 기존 결과만 비교
     python run_all.py --skip-train
+
+    # 특정 Phase만 비교 (표/그래프 한정)
+    python run_all.py --skip-train --phases quantile sal_balanced
 
 모델 개별 실행:
     python bilstm.py
@@ -29,27 +36,53 @@ RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 ALL_MODELS = ["bilstm", "itransformer", "tft"]
+ALL_PHASES = ["quantile", "sal_conservative", "sal_balanced", "sal_aggressive"]
 SCRIPTS    = {m: f"{m}.py" for m in ALL_MODELS}
-COLORS     = {"bilstm": "#2E75B6", "itransformer": "#C55A11", "tft": "#70AD47"}
 LABELS     = {"bilstm": "Bi-LSTM", "itransformer": "iTransformer", "tft": "TFT"}
+PHASE_LABELS = {
+    "quantile":         "Quantile",
+    "sal_conservative": "SAL-Conserv",
+    "sal_balanced":     "SAL-Balanced",
+    "sal_aggressive":   "SAL-Aggr",
+}
+# Phase별 색상 (모델 그룹 안에서 4개 바 구분)
+PHASE_COLORS = {
+    "quantile":         "#7F7F7F",
+    "sal_conservative": "#2E75B6",
+    "sal_balanced":     "#C55A11",
+    "sal_aggressive":   "#70AD47",
+}
 
 
 # ── 모델 실행 ─────────────────────────────────────────────────────────────────
-def run_model(name: str) -> bool:
+def phase_done(model: str, phase: str) -> bool:
+    return os.path.exists(os.path.join(RESULTS_DIR, f"{model}_{phase}_results.json"))
+
+
+def run_phase(name: str, phase: str) -> bool:
+    """phase 하나를 별도 프로세스로 실행.
+    프로세스를 phase 단위로 분리해야 한 프로세스가 여러 fold를 누적하며
+    host RAM을 잠식하다 OOM(code=-9)으로 죽는 걸 막을 수 있다 (TFT처럼).
+    """
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), SCRIPTS[name])
+    force  = os.environ.get("FORCE_RETRAIN") == "1"
+    if not force and phase_done(name, phase):
+        print(f"  ⏭️  [{LABELS[name]}] {phase} 결과 존재 — 건너뜀")
+        return True
     print(f"\n{'='*60}")
-    print(f"  [{LABELS[name]}] 학습 시작")
+    print(f"  [{LABELS[name]}] {phase} 학습 (격리 프로세스)")
     print(f"{'='*60}")
-    result = subprocess.run([sys.executable, script], check=False)
+    result = subprocess.run([sys.executable, script, "--phase", phase], check=False)
     ok = result.returncode == 0
     if not ok:
-        print(f"  ⚠️  {name} 오류 발생 (code={result.returncode})")
+        print(f"  ⚠️  {name}/{phase} 오류 (code={result.returncode})"
+              + ("  ← -9는 OOM(시스템 RAM) kill" if result.returncode == -9 else ""))
     return ok
 
 
 # ── 결과 로드 ─────────────────────────────────────────────────────────────────
-def load_result(name: str):
-    path = os.path.join(RESULTS_DIR, f"{name}_results.json")
+def load_result(model: str, phase: str):
+    path = os.path.join(RESULTS_DIR, f"{model}_{phase}_results.json")
     if not os.path.exists(path):
         return None
     with open(path) as f:
@@ -57,92 +90,97 @@ def load_result(name: str):
 
 
 # ── 비교 테이블 출력 ──────────────────────────────────────────────────────────
-def print_comparison_table(models):
-    print("\n" + "=" * 74)
-    print(f"  {'모델':<14} {'CV MAE':>8} {'CV RMSE':>9} {'CV MAPE':>9}"
-          f" {'Test MAE':>9} {'Test RMSE':>10} {'Test MAPE':>10}")
-    print("=" * 74)
+def print_comparison_table(models, phases):
+    cols = ["MAE", "RMSE", "SMAPE", "ViolRate", "AvgOver", "AvgUnder", "SAL"]
+    header = (f"  {'Model':<13}{'Phase':<13}"
+              + "".join(f"{c:>10}" for c in cols))
+    print("\n" + "=" * len(header))
+    print("  CV 평균 지표 (SAL = 공통기준 balanced sal_eval_score)")
+    print("=" * len(header))
+    print(header)
+    print("-" * len(header))
     for name in models:
-        r = load_result(name)
-        if r is None:
-            print(f"  {LABELS[name]:<14} {'(결과 없음)':>57}")
-            continue
-        cv = r["cv_mean"]; te = r["test_metrics"]
-        print(f"  {LABELS[name]:<14} {cv['MAE']:>8.4f} {cv['RMSE']:>9.4f}"
-              f" {cv['MAPE']:>8.2f}% {te['MAE']:>9.4f}"
-              f" {te['RMSE']:>10.4f} {te['MAPE']:>9.2f}%")
-    print("=" * 74)
+        for phase in phases:
+            r = load_result(name, phase)
+            if r is None:
+                print(f"  {LABELS[name]:<13}{PHASE_LABELS[phase]:<13}{'(결과 없음)':>20}")
+                continue
+            cv = r["cv_mean"]
+            print(f"  {LABELS[name]:<13}{PHASE_LABELS[phase]:<13}"
+                  f"{cv['MAE']:>10.4f}{cv['RMSE']:>10.4f}{cv['SMAPE']:>9.2f}%"
+                  f"{cv['violation_rate']:>10.3f}{cv['avg_overprovision']:>10.4f}"
+                  f"{cv['avg_underprovision']:>10.4f}{cv['sal_eval_score']:>10.4f}")
+    print("=" * len(header))
+
+    # Test 동일 지표
+    print("\n" + "=" * len(header))
+    print("  Test 지표")
+    print("=" * len(header))
+    print(header)
+    print("-" * len(header))
+    for name in models:
+        for phase in phases:
+            r = load_result(name, phase)
+            if r is None:
+                continue
+            te = r["test_metrics"]
+            print(f"  {LABELS[name]:<13}{PHASE_LABELS[phase]:<13}"
+                  f"{te['MAE']:>10.4f}{te['RMSE']:>10.4f}{te['SMAPE']:>9.2f}%"
+                  f"{te['violation_rate']:>10.3f}{te['avg_overprovision']:>10.4f}"
+                  f"{te['avg_underprovision']:>10.4f}{te['sal_eval_score']:>10.4f}")
+    print("=" * len(header))
 
 
-# ── 비교 그래프 ───────────────────────────────────────────────────────────────
-def plot_bar_comparison(models):
-    results = {n: load_result(n) for n in models}
-    results = {n: r for n, r in results.items() if r}
-    if not results:
-        return
+# ── 그룹 막대그래프 ───────────────────────────────────────────────────────────
+def _grouped_bar(ax, models, phases, value_fn, title, ylabel, fmt=".4f", suf=""):
+    """모델별로 그룹화 → 각 그룹 안에 Phase 바를 나란히."""
+    n_ph = len(phases)
+    x = np.arange(len(models))
+    w = 0.8 / n_ph
+    any_bar = False
+    for j, phase in enumerate(phases):
+        vals = []
+        for name in models:
+            r = load_result(name, phase)
+            vals.append(value_fn(r) if r else np.nan)
+        offs = x - 0.4 + w * (j + 0.5)
+        bars = ax.bar(offs, vals, w, label=PHASE_LABELS[phase],
+                      color=PHASE_COLORS[phase], alpha=0.9)
+        any_bar = any_bar or np.any(~np.isnan(vals))
+        for b, v in zip(bars, vals):
+            if np.isnan(v):
+                continue
+            ax.text(b.get_x() + b.get_width() / 2, v, f"{v:{fmt}}{suf}",
+                    ha="center", va="bottom", fontsize=7, rotation=90)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xticks(x); ax.set_xticklabels([LABELS[m] for m in models])
+    ax.set_ylabel(ylabel)
+    ax.grid(axis="y", alpha=0.3)
+    return any_bar
 
-    names    = list(results.keys())
-    cv_mae   = [results[n]["cv_mean"]["MAE"]      for n in names]
-    test_mae = [results[n]["test_metrics"]["MAE"]  for n in names]
-    cv_mape  = [results[n]["cv_mean"]["MAPE"]      for n in names]
-    test_mape= [results[n]["test_metrics"]["MAPE"] for n in names]
-    labels   = [LABELS[n] for n in names]
-    colors   = [COLORS[n] for n in names]
 
-    x = np.arange(len(names)); w = 0.35
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-
-    for ax, cv_vals, te_vals, ylabel, title in [
-        (axes[0], cv_mae,  test_mae,  "MAE (normalized)", "MAE Comparison"),
-        (axes[1], cv_mape, test_mape, "MAPE (%)",         "MAPE Comparison"),
-    ]:
-        b1 = ax.bar(x - w/2, cv_vals, w, label="CV Mean", color=colors, alpha=0.85)
-        b2 = ax.bar(x + w/2, te_vals, w, label="Test",    color=colors, alpha=0.5, hatch="//")
-        ax.set_title(title, fontsize=13, fontweight="bold")
-        ax.set_xticks(x); ax.set_xticklabels(labels)
-        ax.set_ylabel(ylabel)
-        ax.legend(); ax.grid(axis="y", alpha=0.3)
-        fmt = ".4f" if "MAE" in ylabel else ".2f"
-        suf = "" if "MAE" in ylabel else "%"
-        for bar in list(b1) + list(b2):
-            h = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, h * 1.01,
-                    f"{h:{fmt}}{suf}", ha="center", va="bottom", fontsize=8)
-
-    plt.suptitle("Model Comparison — LLM Workload Prediction (BurstGPT)",
-                 fontsize=14, fontweight="bold")
+def plot_comparison(models, phases, split="cv_mean"):
+    """split: 'cv_mean' 또는 'test_metrics'."""
+    panels = [
+        ("MAE",            lambda r: r[split]["MAE"],               "MAE (normalized)",      ".4f", ""),
+        ("SAL Eval Score", lambda r: r[split]["sal_eval_score"],    "SAL score (공통기준)",   ".4f", ""),
+        ("Violation Rate", lambda r: r[split]["violation_rate"],    "Violation rate",        ".3f", ""),
+        ("Avg Underprov.", lambda r: r[split]["avg_underprovision"],"Avg underprovision",    ".4f", ""),
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(15, 9))
+    handles = labels = None
+    for ax, (title, fn, ylabel, fmt, suf) in zip(axes.ravel(), panels):
+        _grouped_bar(ax, models, phases, fn, title, ylabel, fmt, suf)
+        handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=len(phases),
+               bbox_to_anchor=(0.5, 1.0))
+    tag = "CV" if split == "cv_mean" else "Test"
+    plt.suptitle(f"2-Phase Comparison ({tag}) — Quantile vs SAL scenarios",
+                 fontsize=14, fontweight="bold", y=1.04)
     plt.tight_layout()
-    out = os.path.join(RESULTS_DIR, "model_comparison.png")
+    out = os.path.join(RESULTS_DIR, f"phase_comparison_{split}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight"); plt.close()
-    print(f"\n  비교 그래프 저장: {out}")
-
-
-def plot_fold_stability(models):
-    """Fold별 MAE 선 그래프 (안정성 확인)."""
-    results = {n: load_result(n) for n in models}
-    results = {n: r for n, r in results.items() if r}
-    if not results:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    markers = ["o", "s", "^"]
-    for i, (name, r) in enumerate(results.items()):
-        folds    = [f["fold"] for f in r["fold_val_metrics"]]
-        fold_mae = [f["MAE"]  for f in r["fold_val_metrics"]]
-        ax.plot(folds, fold_mae, marker=markers[i], color=COLORS[name],
-                label=LABELS[name], lw=1.5, markersize=7)
-        ax.axhline(r["cv_mean"]["MAE"], color=COLORS[name],
-                   ls="--", alpha=0.4, lw=1)
-
-    ax.set_title("Fold-wise Validation MAE (Walk-Forward CV Stability)",
-                 fontsize=13, fontweight="bold")
-    ax.set_xlabel("Fold"); ax.set_ylabel("MAE (normalized)")
-    ax.set_xticks(range(1, 6))
-    ax.legend(); ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    out = os.path.join(RESULTS_DIR, "fold_stability.png")
-    plt.savefig(out, dpi=150); plt.close()
-    print(f"  Fold 안정성 그래프 저장: {out}")
+    print(f"  비교 그래프 저장: {out}")
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
@@ -153,16 +191,21 @@ if __name__ == "__main__":
                         help="학습 건너뛰고 기존 결과만 비교")
     parser.add_argument("--models", nargs="+", default=ALL_MODELS,
                         choices=ALL_MODELS)
+    parser.add_argument("--phases", nargs="+", default=ALL_PHASES,
+                        choices=ALL_PHASES,
+                        help="비교에 포함할 Phase (표/그래프 한정)")
     args = parser.parse_args()
 
     if not args.skip_train:
+        # phase 단위 격리 프로세스로 실행 (모델당 4 phase) → 프로세스별 메모리 회수
         for name in args.models:
-            run_model(name)
+            for phase in args.phases:
+                run_phase(name, phase)
 
     print("\n\n" + "█" * 60)
-    print("  최종 결과 비교")
+    print("  최종 결과 비교 (2-Phase)")
     print("█" * 60)
-    print_comparison_table(args.models)
-    plot_bar_comparison(args.models)
-    plot_fold_stability(args.models)
+    print_comparison_table(args.models, args.phases)
+    plot_comparison(args.models, args.phases, split="cv_mean")
+    plot_comparison(args.models, args.phases, split="test_metrics")
     print("\n  모든 결과: results/ 디렉토리 확인")
